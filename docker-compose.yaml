@@ -1,0 +1,142 @@
+version: '3.8'
+
+services:
+  prompt2image:
+    build:
+      context: .
+      dockerfile: dockerfile
+    container_name: prompt2image-app
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./output:/app/output
+      - ./logs:/app/logs
+      - ./config:/app/config
+    environment:
+      - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
+      - DEFAULT_WIDTH=${DEFAULT_WIDTH:-512}
+      - DEFAULT_HEIGHT=${DEFAULT_HEIGHT:-512}
+      - MAX_WIDTH=${MAX_WIDTH:-1024}
+      - MAX_HEIGHT=${MAX_HEIGHT:-1024}
+      - DEFAULT_STEPS=${DEFAULT_STEPS:-20}
+      - MAX_STEPS=${MAX_STEPS:-50}
+      - DEFAULT_GUIDANCE=${DEFAULT_GUIDANCE:-7.5}
+      - OUTPUT_DIR=${OUTPUT_DIR:-/app/output}
+      - MAX_STORAGE_MB=${MAX_STORAGE_MB:-1000}
+      - AUTO_CLEANUP_DAYS=${AUTO_CLEANUP_DAYS:-30}
+      - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-10}
+      - TIMEOUT_SECONDS=${TIMEOUT_SECONDS:-60}
+      - MAX_PROMPT_LENGTH=${MAX_PROMPT_LENGTH:-500}
+      - HOST=${HOST:-0.0.0.0}
+      - PORT=${PORT:-8000}
+      - DEBUG=${DEBUG:-false}
+      - ENABLE_WATERMARK=${ENABLE_WATERMARK:-true}
+      - ENABLE_METADATA=${ENABLE_METADATA:-true}
+      - ENABLE_RATE_LIMITING=${ENABLE_RATE_LIMITING:-true}
+      - DEVELOPMENT_MODE=${DEVELOPMENT_MODE:-false}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ENABLE_CORS=${ENABLE_CORS:-true}
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      - redis
+    networks:
+      - prompt2image-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: prompt2image-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-defaultpass}
+    networks:
+      - prompt2image-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: prompt2image-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/ssl:/etc/nginx/ssl
+      - ./output:/var/www/images
+    depends_on:
+      - prompt2image
+    networks:
+      - prompt2image-network
+
+  # اختياري: قاعدة بيانات PostgreSQL للمستقبل
+  postgres:
+    image: postgres:15-alpine
+    container_name: prompt2image-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-prompt2image}
+      - POSTGRES_USER=${POSTGRES_USER:-prompt2image}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-prompt2image123}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - prompt2image-network
+
+  # اختياري: مراقبة مع Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prompt2image-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+    networks:
+      - prompt2image-network
+
+  # اختياري: Grafana للمراقبة
+  grafana:
+    image: grafana/grafana:latest
+    container_name: prompt2image-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin123}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+    networks:
+      - prompt2image-network
+
+volumes:
+  redis_data:
+  postgres_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  prompt2image-network:
+    driver: bridge
